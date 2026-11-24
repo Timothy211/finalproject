@@ -13,8 +13,25 @@ function err(status: number, code: string, extra: Record<string, unknown> = {}) 
   return NextResponse.json({ error: code, ...extra }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
+/** Server error with a short, non-secret explanation (also logged to the host's function logs). */
+function serverError(detail: string, extra: Record<string, unknown> = {}) {
+  console.error(`[move] ${detail}`);
+  return err(500, "SERVER_ERROR", { detail, ...extra });
+}
+
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  if (!adminConfigured()) return err(500, "SERVER_ERROR", { detail: "Server is missing Supabase env vars" });
+  try {
+    return await handle(req, ctx);
+  } catch (e) {
+    return serverError(`Unexpected error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function handle(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  if (!adminConfigured()) {
+    const missing = ["NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SECRET_KEY"].filter((k) => !process.env[k]);
+    return serverError(`Missing env var on the server: ${missing.join(", ")}`);
+  }
   const { id } = await ctx.params;
   if (!UUID.test(id)) return err(404, "GAME_NOT_FOUND");
 
@@ -37,7 +54,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const userId = userData.user.id;
 
   const { data: row, error: loadErr } = await sb.from("games").select("*").eq("id", id).maybeSingle();
-  if (loadErr) return err(500, "SERVER_ERROR");
+  if (loadErr)
+    return serverError(
+      `Couldn't read the game (${loadErr.message}). Is SUPABASE_SECRET_KEY the secret/service_role key, not the publishable one?`,
+    );
   if (!row) return err(404, "GAME_NOT_FOUND");
   const game = normalizeRowServer(row);
 
@@ -48,7 +68,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (rpcErr) {
     const code = errorCodeOf(rpcErr);
     const { data: fresh } = await sb.from("games").select("*").eq("id", id).maybeSingle();
-    return err(statusForCode(code), code === "UNKNOWN" ? "SERVER_ERROR" : code, { game: fresh ? normalizeRowServer(fresh) : game });
+    const freshGame = fresh ? normalizeRowServer(fresh) : game;
+    if (code === "UNKNOWN") return serverError(`commit_move failed: ${rpcErr.message}`, { game: freshGame });
+    return err(statusForCode(code), code, { game: freshGame });
   }
   const result = normalizeRowServer(Array.isArray(committed) ? committed[0] : committed);
 

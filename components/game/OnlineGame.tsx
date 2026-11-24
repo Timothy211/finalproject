@@ -130,14 +130,16 @@ export function OnlineGame({ channel, userId, mySeat }: { channel: Channel; user
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ move, expectedVersion: game.version }),
         });
-        const body = (await res.json().catch(() => ({}))) as { game?: GameRow; error?: AppErrorCode; reason?: string };
+        const body = (await res.json().catch(() => ({}))) as { game?: GameRow; error?: AppErrorCode; reason?: string; detail?: string };
         if (res.ok && body.game) {
           applyRow(body.game);
         } else {
           if (body.game) resetTo(body.game);
           else void refetch();
-          const code = body.error ?? "UNKNOWN";
-          toast.error(code === "ILLEGAL_MOVE" ? friendlyError(code, body.reason) : messageFor(code));
+          const code = body.error ?? (res.status >= 500 ? "SERVER_ERROR" : "UNKNOWN");
+          const msg = code === "ILLEGAL_MOVE" ? friendlyError(code, body.reason) : messageFor(code);
+          toast.error(body.detail ? `${msg} — ${body.detail}` : res.ok ? msg : `${msg} (HTTP ${res.status})`);
+          if (body.detail) console.error("Move rejected:", body.detail);
           play("illegal");
         }
       } catch (e) {
